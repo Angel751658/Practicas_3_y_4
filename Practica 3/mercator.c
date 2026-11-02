@@ -12,6 +12,8 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <sys/shm.h>
+#include <fcntl.h>
+#include <semaphore.h>
 
 #define NPROCS 4
 #define SERIES_MEMBER_COUNT 200000
@@ -25,6 +27,10 @@ typedef struct {
 } SHARED;
 
 SHARED *shared;
+
+sem_t *inicio;
+sem_t *terminados;
+sem_t *exmut;
 
 double get_member(int n, double x)
 {
@@ -45,7 +51,7 @@ void proc(int proc_num)
     int i;
 
     // Espera a que master_proc ponga la bandera en 1 para iniciar
-    while(!(shared->start_all));
+    sem_wait(inicio);
 
     // Cada proceso realiza el cálculo de los términos que le tocan
     shared->sums[proc_num] = 0;
@@ -53,7 +59,11 @@ void proc(int proc_num)
         shared->sums[proc_num] += get_member(i+1, shared->x_val);
 
     // Incrementa la variable proc_count que es la cantidad de procesos que terminaron su cálculo
+    sem_wait(exmut);
     shared->proc_count++;
+    if(shared->proc_count == NPROCS)
+        sem_post(terminados);
+    sem_post(exmut);
 
     exit(0);
 }
@@ -72,9 +82,11 @@ void master_proc()
 
     // el master_proc pone una bandera para que los procesos inicien con el cálculo
     shared->start_all=1;
+    for(i=0;i<NPROCS;i++)
+        sem_post(inicio);
 
     // Espera a que todos los procesos terminen su cálculo
-    while (shared->proc_count != NPROCS) {}  
+    sem_wait(terminados);
 
     // Una vez que todos terminan, suma el total de cada uno
     shared->res = 0;
@@ -105,6 +117,14 @@ int main()
     // inicializa las variables en memoria compartida
     shared->proc_count = 0;
     shared->start_all = 0;
+
+    sem_unlink("/mercator_inicio");
+    sem_unlink("/mercator_terminados");
+    sem_unlink("/mercator_exmut");
+
+    inicio = sem_open("/mercator_inicio", O_CREAT | O_EXCL, S_IRUSR | S_IWUSR, 0);
+    terminados = sem_open("/mercator_terminados", O_CREAT | O_EXCL, S_IRUSR | S_IWUSR, 0);
+    exmut = sem_open("/mercator_exmut", O_CREAT | O_EXCL, S_IRUSR | S_IWUSR, 1);
  
     gettimeofday(&ts, NULL);
     start_ts = ts.tv_sec; // Tiempo inicial
@@ -139,6 +159,13 @@ int main()
     printf("Tiempo = %lld segundos\n", elapsed_time);
     printf("El resultado es %10.8f\n", shared->res);
     printf("Llamando a la función ln(1 + %f) = %10.8f\n",shared->x_val, log(1+shared->x_val));
+
+    sem_close(inicio);
+    sem_close(terminados);
+    sem_close(exmut);
+    sem_unlink("/mercator_inicio");
+    sem_unlink("/mercator_terminados");
+    sem_unlink("/mercator_exmut");
 
     // Desconecta y elimnina la memoria compartida
     shmdt(shared);
